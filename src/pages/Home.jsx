@@ -5,13 +5,41 @@ import {
   Plus,
   Utensils,
   Banknote,
-  Ticket,
   Car,
   MinusCircle,
-  Trash2
+  Trash2,
+  Pencil
 } from "lucide-react";
+import { apiFetch } from "../api";
 
-export default function Home() {
+function calculateBalanceData(allTransactions, categories) {
+  const freshBalance = {
+    "Total Balance": { amount: 0, income: 0, expenses: 0 },
+  };
+
+  categories.forEach((category) => {
+    freshBalance[category] = { amount: 0, income: 0, expenses: 0 };
+  });
+
+  allTransactions.forEach((trx) => {
+    const amount = parseInt(trx.amount, 10) || 0;
+    const balanceKey = trx.balance;
+
+    if (freshBalance[balanceKey]) {
+      freshBalance[balanceKey].amount += amount;
+      if (amount > 0) freshBalance[balanceKey].income += amount;
+      else freshBalance[balanceKey].expenses += Math.abs(amount);
+    }
+
+    freshBalance["Total Balance"].amount += amount;
+    if (amount > 0) freshBalance["Total Balance"].income += amount;
+    else freshBalance["Total Balance"].expenses += Math.abs(amount);
+  });
+
+  return freshBalance;
+}
+
+export default function Home({ user, onOpenProfile }) {
   const [isExpanded, setIsExpanded] = useState(false);
   const [selectedBalance, setSelectedBalance] = useState("Total Balance");
 
@@ -19,6 +47,10 @@ export default function Home() {
   const [newCategoryInput, setNewCategoryInput] = useState("");
   const [showDeletePrompt, setShowDeletePrompt] = useState(false);
   const [categoryToDelete, setCategoryToDelete] = useState(null);
+
+  // State untuk popup edit nominal
+  const [editingTransaction, setEditingTransaction] = useState(null);
+  const [editAmount, setEditAmount] = useState("");
 
   const [transactions, setTransactions] = useState([]);
 
@@ -30,111 +62,88 @@ export default function Home() {
   // State for See all toggle
   const [showAllTransactions, setShowAllTransactions] = useState(false);
 
+  // Daftar rekening sekarang berasal dari database (bukan localStorage)
+  const [accounts, setAccounts] = useState([]);
+  const [balanceCategories, setBalanceCategories] = useState([]);
+
   const [balanceData, setBalanceData] = useState({
     "Total Balance": { amount: 0, income: 0, expenses: 0 },
-    "Bank": { amount: 0, income: 0, expenses: 0 },
-    "Cash": { amount: 0, income: 0, expenses: 0 },
-    "E-Wallet": { amount: 0, income: 0, expenses: 0 }, // Sesuaikan dengan kategori di AddTransaction
   });
 
-useEffect(() => {
-    fetch("/api/transactions")
-      .then((res) => res.json())
-      .then((result) => {
-        if (result.status === "Success") {
-          const data = result.data;
-          setTransactions(data);
-          calculateBalances(data); 
+  useEffect(() => {
+    let isCancelled = false;
 
-          // --- LOGIKA SMART MERGE SINKRONISASI KATEGORI ---
-          const defaultCategories = ["Bank", "Cash", "E-Wallet"]; // 1. Data Bawaan
-          const savedCategories = JSON.parse(localStorage.getItem("balanceCategories") || "[]"); // 2. Data Manual (BCA dll)
-          const sheetsCategories = data.map(trx => trx.balance).filter(Boolean); // 3. Data Database
+    Promise.all([apiFetch("/api/transactions"), apiFetch("/api/accounts")])
+      .then(([transactionsResult, accountsResult]) => {
+        if (isCancelled) return;
 
-          // Gabungkan ketiganya dan buang yang duplikat menggunakan Set
-          const mergedCategories = [...new Set([...defaultCategories, ...savedCategories, ...sheetsCategories])];
-          
-          // Simpan kembali secara permanen
-          localStorage.setItem("balanceCategories", JSON.stringify(mergedCategories));
-        }
+        const transactionData = transactionsResult.data || [];
+        const accountData = accountsResult.data || [];
+        const accountNames = accountData.map((account) => account.name);
+
+        setTransactions(transactionData);
+        setAccounts(accountData);
+        setBalanceCategories(accountNames);
+        setBalanceData(calculateBalanceData(transactionData, accountNames));
       })
-      .catch((err) => console.error("Gagal ambil data:", err));
-  }, []);
+      .catch((error) => {
+        if (!isCancelled) {
+          console.error("Gagal ambil data:", error);
+          alert("Gagal memuat data: " + error.message);
+        }
+      });
 
-// 4. Fungsi Logika untuk menghitung saldo dari daftar transaksi (VERSI PINTAR)
-  const calculateBalances = (allTransactions) => {
-    
-    // Kita pancing dengan Data Default agar aman
-    const freshBalance = {
-      "Total Balance": { amount: 0, income: 0, expenses: 0 },
-      "Bank": { amount: 0, income: 0, expenses: 0 },
-      "Cash": { amount: 0, income: 0, expenses: 0 },
-      "E-Wallet": { amount: 0, income: 0, expenses: 0 },
+    return () => {
+      isCancelled = true;
     };
-
-    allTransactions.forEach((trx) => {
-      const amt = parseInt(trx.amount) || 0;
-      const balKey = trx.balance;
-
-      // KUNCI UTAMA: Jika ada nama kategori baru dari Database yang belum ada di list,
-      // buatkan tempatnya secara otomatis!
-      if (!freshBalance[balKey]) {
-        freshBalance[balKey] = { amount: 0, income: 0, expenses: 0 };
-      }
-
-      // Update Per Kategori
-      freshBalance[balKey].amount += amt;
-      if (amt > 0) freshBalance[balKey].income += amt;
-      else freshBalance[balKey].expenses += Math.abs(amt);
-
-      // Update Total Keseluruhan
-      freshBalance["Total Balance"].amount += amt;
-      if (amt > 0) freshBalance["Total Balance"].income += amt;
-      else freshBalance["Total Balance"].expenses += Math.abs(amt);
-    });
-
-    // Supaya kategori yang ditambahkan manual via tombol tidak hilang,
-    // kita gabungkan data lama (prev) dengan hasil hitungan baru
-    setBalanceData((prev) => ({
-      ...prev,
-      ...freshBalance
-    }));
-  };
+  }, []);
 
   const handleSelectBalance = (category) => {
     setSelectedBalance(category);
     setIsExpanded(false);
   };
 
-  // Fungsi untuk menambah kategori rekening baru
+  // Fungsi untuk menambah rekening baru
   const handleAddCategory = () => {
     setNewCategoryInput("");
     setShowAddPrompt(true);
   };
 
-  const confirmAddCategory = (newCategory) => {
-    if (newCategory && newCategory.trim() !== "") {
-      const trimmedCategory = newCategory.trim();
+  const confirmAddCategory = async (newCategory) => {
+    const trimmedCategory = String(newCategory || "").trim();
 
-      if (balanceData[trimmedCategory]) {
-        alert("Kategori tersebut sudah ada!");
-        return;
-      }
-
-      // 1. Update UI Home secara instan
-      setBalanceData((prev) => ({
-        ...prev,
-        [trimmedCategory]: { amount: 0, income: 0, expenses: 0 }
-      }));
-
-      // 2. SINKRONISASI: Simpan daftar kategori ke LocalStorage agar bisa dibaca halaman Add
-      const currentCategories = JSON.parse(localStorage.getItem("balanceCategories") || '["Bank", "Cash", "E-Wallet"]');
-      if (!currentCategories.includes(trimmedCategory)) {
-        const updatedCategories = [...currentCategories, trimmedCategory];
-        localStorage.setItem("balanceCategories", JSON.stringify(updatedCategories));
-      }
+    if (!trimmedCategory) {
+      setShowAddPrompt(false);
+      return;
     }
-    setShowAddPrompt(false);
+
+    const isDuplicate = accounts.some(
+      (account) =>
+        account.name.toLowerCase() === trimmedCategory.toLowerCase()
+    );
+
+    if (isDuplicate) {
+      alert("Rekening tersebut sudah ada!");
+      return;
+    }
+
+    try {
+      const result = await apiFetch("/api/accounts", {
+        method: "POST",
+        body: JSON.stringify({ name: trimmedCategory }),
+      });
+      const newAccount = result.data;
+      const updatedAccounts = [...accounts, newAccount];
+      const updatedNames = updatedAccounts.map((account) => account.name);
+
+      setAccounts(updatedAccounts);
+      setBalanceCategories(updatedNames);
+      setBalanceData(calculateBalanceData(transactions, updatedNames));
+      setNewCategoryInput("");
+      setShowAddPrompt(false);
+    } catch (error) {
+      alert(error.message);
+    }
   };
 
   // Fungsi untuk MENGHAPUS kategori
@@ -144,28 +153,94 @@ useEffect(() => {
     setShowDeletePrompt(true);
   };
 
-  const confirmDeleteCategory = () => {
+  const confirmDeleteCategory = async () => {
     if (!categoryToDelete) return;
 
-    // 1. Hapus dari LocalStorage agar sinkron dengan halaman Add & Overview
-    const currentCategories = JSON.parse(localStorage.getItem("balanceCategories") || "[]");
-    const updatedCategories = currentCategories.filter(cat => cat !== categoryToDelete);
-    localStorage.setItem("balanceCategories", JSON.stringify(updatedCategories));
+    const account = accounts.find((item) => item.name === categoryToDelete);
 
-    // 2. Hapus dari layar Home seketika
-    setBalanceData((prevData) => {
-      const newData = { ...prevData };
-      delete newData[categoryToDelete];
-      return newData;
-    });
-
-    // 3. Jika yang dihapus sedang aktif dilihat, kembalikan ke Total Balance
-    if (selectedBalance === categoryToDelete) {
-      setSelectedBalance("Total Balance");
+    if (!account) {
+      setShowDeletePrompt(false);
+      setCategoryToDelete(null);
+      return;
     }
-    
-    setShowDeletePrompt(false);
-    setCategoryToDelete(null);
+
+    try {
+      await apiFetch(`/api/accounts/${account.id}`, { method: "DELETE" });
+
+      const updatedTransactions = transactions.map((trx) =>
+        trx.accountId === account.id || trx.balance === account.name
+          ? { ...trx, balance: "Tanpa Rekening", type: "Tanpa Rekening" }
+          : trx
+      );
+      const updatedAccounts = accounts.filter(
+        (item) => item.id !== account.id
+      );
+      const updatedNames = updatedAccounts.map((item) => item.name);
+
+      setAccounts(updatedAccounts);
+      setBalanceCategories(updatedNames);
+      setTransactions(updatedTransactions);
+      setBalanceData(calculateBalanceData(updatedTransactions, updatedNames));
+
+      if (selectedBalance === categoryToDelete) {
+        setSelectedBalance("Total Balance");
+      }
+
+      setShowDeletePrompt(false);
+      setCategoryToDelete(null);
+    } catch (error) {
+      alert(error.message);
+    }
+  };
+
+  // --- EDIT NOMINAL TRANSAKSI ---
+  const handleEditTransaction = (trx) => {
+    const displayValue = Math.abs(parseInt(trx.amount, 10) || 0);
+    setEditAmount(`Rp${displayValue.toLocaleString("id-ID")}`);
+    setEditingTransaction(trx);
+  };
+
+  const handleEditAmountChange = (e) => {
+    const rawValue = e.target.value;
+    const numericValue = rawValue.replace(/\D/g, "");
+
+    if (!numericValue) {
+      setEditAmount("");
+      return;
+    }
+
+    const formattedNumber = new Intl.NumberFormat("id-ID").format(numericValue);
+    setEditAmount(`Rp${formattedNumber}`);
+  };
+
+  const confirmEditTransaction = async () => {
+    if (!editingTransaction) return;
+
+    const cleanAmount = parseInt(editAmount.replace(/\D/g, ""), 10) || 0;
+    const finalAmount = editingTransaction.report === "Expenses"
+      ? -Math.abs(cleanAmount)
+      : Math.abs(cleanAmount);
+
+    try {
+      const result = await apiFetch(
+        `/api/transactions/${editingTransaction.id}`,
+        {
+          method: "PUT",
+          body: JSON.stringify({ amount: finalAmount }),
+        }
+      );
+
+      const updatedTransactions = transactions.map((trx) =>
+        trx.id === result.data.id ? result.data : trx
+      );
+
+      setTransactions(updatedTransactions);
+      setBalanceData(calculateBalanceData(updatedTransactions, balanceCategories));
+      setEditingTransaction(null);
+    } catch (error) {
+      console.error("Error editing:", error);
+      alert(error.message);
+    }
   };
 
   // --- SWIPE TO DELETE LOGIC ---
@@ -212,22 +287,15 @@ useEffect(() => {
     
     setIsDeleting(true);
     try {
-      const response = await fetch(`/api/transactions/${id}`, {
-        method: 'DELETE',
-      });
-      const result = await response.json();
-      
-      if (result.status === 'Success') {
-        const updatedTransactions = transactions.filter(trx => trx.id !== id);
-        setTransactions(updatedTransactions);
-        calculateBalances(updatedTransactions);
-        setSwipedTransactionId(null);
-      } else {
-        alert(result.message || "Gagal menghapus transaksi");
-      }
+      await apiFetch(`/api/transactions/${id}`, { method: "DELETE" });
+
+      const updatedTransactions = transactions.filter((trx) => trx.id !== id);
+      setTransactions(updatedTransactions);
+      setBalanceData(calculateBalanceData(updatedTransactions, balanceCategories));
+      setSwipedTransactionId(null);
     } catch (error) {
       console.error(error);
-      alert("Terjadi kesalahan jaringan");
+      alert(error.message);
     } finally {
       setIsDeleting(false);
     }
@@ -235,8 +303,31 @@ useEffect(() => {
 
   return (
     <div className="screen-content">
-      <header className="header">
-        <h1>Home</h1>
+      <header className="header home-header">
+        <div>
+          <h1>Home</h1>
+          <p className="header-user">{user?.name}</p>
+        </div>
+        <button
+          className="header-avatar"
+          type="button"
+          onClick={onOpenProfile}
+          aria-label="Buka profile"
+        >
+          {user?.avatar ? (
+            <img src={user.avatar} alt="" />
+          ) : (
+            <span>
+              {(user?.name || "?")
+                .trim()
+                .split(/\s+/)
+                .slice(0, 2)
+                .map((part) => part.charAt(0))
+                .join("")
+                .toUpperCase() || "?"}
+            </span>
+          )}
+        </button>
       </header>
 
 {/* BALANCE CARD */}
@@ -247,7 +338,7 @@ useEffect(() => {
             {selectedBalance} {isExpanded ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
           </span>
           <h2 className="total-amount">
-            Rp{balanceData[selectedBalance].amount.toLocaleString("id-ID")}
+            Rp{balanceData[selectedBalance]?.amount.toLocaleString("id-ID") ?? 0}
           </h2>
         </div>
 
@@ -255,11 +346,11 @@ useEffect(() => {
           <div className={`balance-summary ${isExpanded ? "hidden" : ""}`}>
           <div className="summary-item">
             <span className="summary-label">Income</span>
-            <span className="summary-value">Rp{balanceData[selectedBalance].income.toLocaleString("id-ID")}</span>
+            <span className="summary-value">Rp{balanceData[selectedBalance]?.income.toLocaleString("id-ID") ?? 0}</span>
           </div>
           <div className="summary-item">
             <span className="summary-label">Expenses</span>
-            <span className="summary-value">Rp{balanceData[selectedBalance].expenses.toLocaleString("id-ID")}</span>
+            <span className="summary-value">Rp{balanceData[selectedBalance]?.expenses.toLocaleString("id-ID") ?? 0}</span>
           </div>
         </div>
 
@@ -275,8 +366,7 @@ useEffect(() => {
             </div>
           )}
 
-          {Object.keys(balanceData).map((key) => {
-            if (key === "Total Balance") return null;
+          {balanceCategories.filter(cat => cat !== "Total Balance").map((key) => {
             return (
               <div 
                 className="detail-item" 
@@ -335,7 +425,7 @@ useEffect(() => {
                 onTouchStart={handleTouchStart}
                 onTouchMove={(e) => handleTouchMove(e, trx.id)}
               >
-                {/* Tombol Hapus (Tersembunyi di kiri) */}
+                {/* Tombol Hapus & Edit (Tersembunyi di kiri) */}
                 <div className={`transaction-swipe-action ${swipedTransactionId === trx.id ? 'visible' : ''}`}>
                   <button 
                     className="delete-icon-btn" 
@@ -345,7 +435,17 @@ useEffect(() => {
                   >
                     <Trash2 size={24} color={isDeleting && swipedTransactionId === trx.id ? "#888" : "#000"} />
                   </button>
+
+                  <button 
+                    className="edit-icon-btn" 
+                    onClick={() => handleEditTransaction(trx)}
+                  >
+                    <Pencil size={20} color="#ffffff" />
+                  </button>
                 </div>
+
+              
+                
 
                 {/* Konten Transaksi (Bergeser ke kanan saat di-swipe) */}
                 <div 
@@ -428,6 +528,41 @@ useEffect(() => {
                 style={{ backgroundColor: "#e74c3c" }}
               >
                 Hapus
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* CUSTOM EDIT NOMINAL PROMPT */}
+      {editingTransaction && (
+        <div className="custom-popup-overlay">
+          <div className="custom-popup">
+            <h3 className="custom-popup-title">Edit Nominal</h3>
+            <p className="custom-popup-desc">
+              {editingTransaction.title} · {editingTransaction.report === "Expenses" ? "Pengeluaran" : "Pemasukan"}
+            </p>
+            <input 
+              type="text"
+              inputMode="numeric"
+              className="custom-popup-input"
+              value={editAmount}
+              onChange={handleEditAmountChange}
+              placeholder="Rp0"
+              autoFocus
+            />
+            <div className="custom-popup-actions">
+              <button 
+                className="popup-btn cancel" 
+                onClick={() => setEditingTransaction(null)}
+              >
+                Batal
+              </button>
+              <button 
+                className="popup-btn confirm" 
+                onClick={confirmEditTransaction}
+              >
+                Simpan
               </button>
             </div>
           </div>

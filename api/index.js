@@ -1,185 +1,122 @@
-import express from 'express';
-import { google } from 'googleapis';
-import cors from 'cors';
+import "dotenv/config";
+import express from "express";
+import session from "express-session";
+import connectPgSimple from "connect-pg-simple";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { ensureSchema, pool } from "./db.js";
+import { requireAuth } from "./middleware/requireAuth.js";
+import authRoutes from "./routes/auth.js";
+import accountRoutes from "./routes/accounts.js";
+import categoryRoutes from "./routes/categories.js";
+import transactionRoutes from "./routes/transactions.js";
 
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
+const isProduction = process.env.NODE_ENV === "production";
+const sessionSecret =
+  process.env.SESSION_SECRET || "development-secret-change-this-immediately";
 
-// Middleware
-app.use(cors()); 
-app.use(express.json()); 
-
-// Autentikasi ke Google Cloud menggunakan Service Account
-let authOptions = {
-  scopes: ['https://www.googleapis.com/auth/spreadsheets'],
-};
-
-// Cek apakah sedang berjalan di Vercel (mencari variabel Environment)
-if (process.env.GOOGLE_CREDS_JSON) {
-  authOptions.credentials = JSON.parse(process.env.GOOGLE_CREDS_JSON);
-} else {
-  // Jika berjalan di laptop, baca dari file lokal
-  authOptions.keyFile = 'credentials.json';
+if (
+  isProduction &&
+  (!process.env.SESSION_SECRET || process.env.SESSION_SECRET.length < 32)
+) {
+  throw new Error(
+    "SESSION_SECRET wajib diisi minimal 32 karakter saat NODE_ENV=production."
+  );
 }
 
-const auth = new google.auth.GoogleAuth(authOptions);
+app.disable("x-powered-by");
+app.set("trust proxy", 1);
+app.use(express.json({ limit: "1mb" }));
 
-// Masukkan Spreadsheet ID kamu di sini
-const spreadsheetId = '1YqmvUgwtyLrw_uPnre4wDQwy4vGGb_V5d8UCVN0BVoY'; 
+const PgSession = connectPgSimple(session);
 
-// --- ROUTE 1: TES KONEKSI KE SHEETS ---
-app.get('/api/test', async (req, res) => {
-  try {
-    const client = await auth.getClient();
-    const sheets = google.sheets({ version: 'v4', auth: client });
+app.use(
+  session({
+    store: new PgSession({
+      pool,
+      tableName: "session",
+      createTableIfMissing: true,
+    }),
+    name: process.env.SESSION_COOKIE_NAME || "sid",
+    secret: sessionSecret,
+    resave: false,
+    saveUninitialized: false,
+    rolling: true,
+    cookie: {
+      httpOnly: true,
+      sameSite: "lax",
+      secure:
+        process.env.COOKIE_SECURE === undefined
+          ? isProduction
+          : process.env.COOKIE_SECURE === "true",
+      maxAge: 30 * 24 * 60 * 60 * 1000,
+    },
+  })
+);
 
-    const response = await sheets.spreadsheets.values.get({
-      spreadsheetId,
-      range: 'Sheet1!A1:H1', 
-    });
-
-    res.json({ 
-        status: 'Berhasil Konek ke Google Sheets!', 
-        data: response.data.values 
-    });
-
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ status: 'Error', message: error.message });
-  }
+app.get("/api/health", async (req, res) => {
+  await pool.query("SELECT 1");
+  res.json({ status: "Success" });
 });
 
-// --- ROUTE 2: MENYIMPAN TRANSAKSI BARU KE SHEETS ---
-app.post('/api/transactions', async (req, res) => {
-  try {
-    const { title, type, amount, date, category, report, balance } = req.body;
+app.use("/api/auth", authRoutes);
+app.use("/api/accounts", requireAuth, accountRoutes);
+app.use("/api/categories", requireAuth, categoryRoutes);
+app.use("/api/transactions", requireAuth, transactionRoutes);
 
-    const client = await auth.getClient();
-    const sheets = google.sheets({ version: 'v4', auth: client });
-
-    const id = Date.now().toString();
-    const values = [
-      [id, title, type, amount, date, category, report, balance]
-    ];
-
-    const response = await sheets.spreadsheets.values.append({
-      spreadsheetId,
-      range: 'Sheet1!A:H', 
-      valueInputOption: 'USER_ENTERED', 
-      resource: {
-        values,
-      },
-    });
-
-    res.json({ status: 'Success', message: 'Data berhasil disimpan ke Sheets!' });
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ status: 'Error', message: error.message });
-  }
-});
-
-// --- ROUTE 3: MENGAMBIL SEMUA DATA TRANSAKSI (VERSI FIX) ---
-app.get('/api/transactions', async (req, res) => {
-  try {
-    const client = await auth.getClient();
-    const sheets = google.sheets({ version: 'v4', auth: client });
-
-    const response = await sheets.spreadsheets.values.get({
-      spreadsheetId,
-      range: 'Sheet1!A2:H', 
-    });
-
-    const rows = response.data.values;
-
-    if (!rows || rows.length === 0) {
-      return res.json({ status: 'Success', data: [] });
-    }
-
-    const transactions = rows.map((row) => ({
-      id: row[0],
-      title: row[1],
-      type: row[2],
-      amount: parseInt(row[3], 10) || 0,
-      date: row[4],
-      category: row[5],
-      report: row[6],
-      balance: row[7]
-    }));
-
-    res.json({ status: 'Success', data: transactions.reverse() });
-
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ status: 'Error', message: error.message });
-  }
-});
-
-// --- ROUTE 4: MENGHAPUS TRANSAKSI ---
-app.delete('/api/transactions/:id', async (req, res) => {
-  try {
-    const transactionId = req.params.id;
-    const client = await auth.getClient();
-    const sheets = google.sheets({ version: 'v4', auth: client });
-
-    // 1. Dapatkan Sheet ID (biasanya 0 untuk Sheet pertama)
-    const spreadsheet = await sheets.spreadsheets.get({
-      spreadsheetId,
-    });
-    
-    // Asumsi kita menggunakan sheet pertama (Sheet1)
-    const sheetId = spreadsheet.data.sheets[0].properties.sheetId;
-
-    // 2. Ambil semua data di kolom A untuk mencari nomor baris
-    const response = await sheets.spreadsheets.values.get({
-      spreadsheetId,
-      range: 'Sheet1!A:A',
-    });
-
-    const rows = response.data.values;
-    if (!rows || rows.length === 0) {
-      return res.status(404).json({ status: 'Error', message: 'Tidak ada data di Sheet' });
-    }
-
-    // 3. Cari indeks baris (ingat index array mulai dari 0, sesuai dengan startIndex API)
-    const rowIndex = rows.findIndex(row => row[0] === transactionId);
-
-    if (rowIndex === -1) {
-      return res.status(404).json({ status: 'Error', message: 'Transaksi tidak ditemukan' });
-    }
-
-    // 4. Hapus baris menggunakan batchUpdate
-    await sheets.spreadsheets.batchUpdate({
-      spreadsheetId,
-      resource: {
-        requests: [
-          {
-            deleteDimension: {
-              range: {
-                sheetId: sheetId,
-                dimension: 'ROWS',
-                startIndex: rowIndex,
-                endIndex: rowIndex + 1
-              }
-            }
-          }
-        ]
-      }
-    });
-
-    res.json({ status: 'Success', message: 'Transaksi berhasil dihapus!' });
-
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ status: 'Error', message: error.message });
-  }
-});
-
-// --- PENGATURAN SERVER KHUSUS VERCEL & LOCALHOST ---
-if (!process.env.VERCEL) {
-  const PORT = 5000;
-  app.listen(PORT, () => {
-    console.log(`Backend Server berjalan di http://localhost:${PORT}`);
+app.use("/api", (req, res) => {
+  res.status(404).json({
+    status: "Error",
+    message: "Endpoint tidak ditemukan.",
   });
+});
+
+const distDir = path.join(__dirname, "..", "dist");
+app.use(express.static(distDir));
+
+app.use((req, res, next) => {
+  if (req.method !== "GET") return next();
+
+  res.sendFile(path.join(distDir, "index.html"), (error) => {
+    if (error) next(error);
+  });
+});
+
+app.use((error, req, res, next) => {
+  if (res.headersSent) return next(error);
+
+  if (error.type === "entity.parse.failed") {
+    return res.status(400).json({
+      status: "Error",
+      message: "Body JSON tidak valid.",
+    });
+  }
+
+  console.error(error);
+  return res.status(500).json({
+    status: "Error",
+    message: isProduction
+      ? "Terjadi kesalahan pada server."
+      : error.message || "Terjadi kesalahan pada server.",
+  });
+});
+
+async function start() {
+  await ensureSchema();
+
+  if (!process.env.VERCEL) {
+    const port = Number(process.env.PORT || 5000);
+    app.listen(port, () => {
+      console.log(`Backend berjalan di http://localhost:${port}`);
+    });
+  }
 }
 
-// Wajib diexport dengan format ES Module agar Vercel bisa menyalakannya
+start().catch((error) => {
+  console.error("Gagal menjalankan server:", error);
+  process.exit(1);
+});
+
 export default app;

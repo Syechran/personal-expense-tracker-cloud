@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
-import { Banknote, Ticket, ChevronDown, Utensils, Car, ShoppingBag, Zap, Tv } from "lucide-react";
+import { Banknote, ChevronDown, Utensils, Car, ShoppingBag, Zap, Tv } from "lucide-react";
+import { apiFetch } from "../api";
 
 export default function Overview() {
   const [overviewTab, setOverviewTab] = useState("statistics");
@@ -16,48 +17,39 @@ export default function Overview() {
   const [statMonthView, setStatMonthView] = useState(new Date());
   const [selectedWeek, setSelectedWeek] = useState(null);
 
-  // Mengambil kategori dinamis secara otomatis seperti AddTransaction & Home
-  // Mengambil kategori dinamis secara otomatis seperti AddTransaction & Home
-  const [balanceCategories, setBalanceCategories] = useState(["Total Balance", "Bank", "Cash", "E-Wallet"]);
-
-  // Ambil Kategori dari LocalStorage
-  useEffect(() => {
-    try {
-      const defaultCategories = ["Bank", "Cash", "E-Wallet"];
-      const saved = localStorage.getItem("balanceCategories");
-      let parsedData = saved ? JSON.parse(saved) : [];
-
-      // Gabungkan default dengan yang ada di storage (kalau-kalau storage kosong/korup)
-      const merged = [...new Set([...defaultCategories, ...parsedData])];
-
-      // Pastikan "Total Balance" tidak ada di tengah-tengah, kita saring dulu
-      const cleanCategories = merged.filter(item => item !== "Total Balance");
-
-      // Pasang ke state dengan Total Balance di urutan paling atas
-      setBalanceCategories(["Total Balance", ...cleanCategories]);
-
-    } catch (error) {
-      console.error("Gagal membaca LocalStorage:", error);
-      setBalanceCategories(["Total Balance", "Bank", "Cash", "E-Wallet"]);
-    }
-  }, []);
+  // Daftar rekening diambil dari backend, bukan localStorage
+  const [balanceCategories, setBalanceCategories] = useState(["Total Balance"]);
 
   // --- 2. FETCH DATA DARI BACKEND ---
   useEffect(() => {
-    fetch("/api/transactions")
-      .then((res) => res.json())
-      .then((result) => {
-        if (result.status === "Success") {
-          // EXTREME SAFEGUARD: Pastikan data adalah Array
-          const fetchedData = Array.isArray(result.data) ? result.data : [];
-          setTransactions(fetchedData);
-        }
+    let isCancelled = false;
+
+    Promise.all([apiFetch("/api/transactions"), apiFetch("/api/accounts")])
+      .then(([transactionResult, accountResult]) => {
+        if (isCancelled) return;
+
+        const fetchedData = Array.isArray(transactionResult.data)
+          ? transactionResult.data
+          : [];
+        const accountNames = (accountResult.data || []).map(
+          (account) => account.name
+        );
+
+        setTransactions(fetchedData);
+        setBalanceCategories(["Total Balance", ...accountNames]);
       })
-      .catch((err) => console.error("Gagal ambil data:", err));
+      .catch((error) => {
+        if (!isCancelled) {
+          console.error("Gagal ambil data:", error);
+        }
+      });
+
+    return () => {
+      isCancelled = true;
+    };
   }, []);
 
   // --- 3. LOGIKA PEMROSESAN DATA ---
-  try {
 
     // A. Filter berdasarkan Dropdown "Balance Category" (Kanan atas)
     const transactionsByBalance = transactions.filter(trx =>
@@ -447,13 +439,4 @@ export default function Overview() {
         </div>
       </div>
     );
-  } catch (error) {
-    return (
-      <div className="screen-content" style={{ padding: "30px", color: "red", backgroundColor: "white" }}>
-        <h2>Mohon maaf, terjadi Error di Overview:</h2>
-        <p style={{ fontWeight: "bold" }}>Pesan: {error.message}</p>
-        <pre style={{ whiteSpace: "pre-wrap", fontSize: "12px", background: "#f8d7da", color: "#721c24", padding: "10px", borderRadius: "5px" }}>{error.stack}</pre>
-      </div>
-    );
-  }
 }

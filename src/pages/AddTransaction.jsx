@@ -9,47 +9,53 @@ import {
   ChevronDown,
   Banknote,
 } from "lucide-react";
+import { apiFetch } from "../api";
 
-export default function AddTransaction({ onClose }) {
+const CATEGORY_ICONS = {
+  Food: <Utensils size={20} />,
+  Shoppings: <ShoppingBag size={20} />,
+  Utilities: <Zap size={20} />,
+  Transport: <Car size={20} />,
+  Entertainment: <Tv size={20} />,
+  Other: <Banknote size={20} />,
+};
+
+function readDraft(key) {
+  try {
+    const rawDraft = localStorage.getItem(key);
+    return rawDraft ? JSON.parse(rawDraft) : null;
+  } catch {
+    return null;
+  }
+}
+
+export default function AddTransaction({ onClose, user }) {
+  const draftKey = `txDraft:${user?.id ?? "guest"}`;
+  const [initialDraft] = useState(() => readDraft(draftKey));
+
   const [isClosing, setIsClosing] = useState(false);
   const [showSuccessPopup, setShowSuccessPopup] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
 
-  const [amount, setAmount] = useState("");
-  const [description, setDescription] = useState("");
-  const [category, setCategory] = useState("Transport");
-  const [reportType, setReportType] = useState("Income");
+  const [amount, setAmount] = useState(initialDraft?.amount || "");
+  const [description, setDescription] = useState(
+    initialDraft?.description || ""
+  );
+  const [reportType, setReportType] = useState(
+    initialDraft?.reportType || "Income"
+  );
   const [isBalanceOpen, setIsBalanceOpen] = useState(false);
-  
-  // INI DIA TERSANGKANYA! State balance ini sebelumnya hilang
-  const [balance, setBalance] = useState("Bank"); 
 
-  // Dilengkapi Sabuk Pengaman JSON
-// Dilengkapi Sabuk Pengaman & Smart Merge
-  const [balances, setBalances] = useState(() => {
-    const defaultCategories = ["Bank", "Cash", "E-Wallet"];
-    try {
-      const saved = localStorage.getItem("balanceCategories");
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed)) {
-           // Gabungkan bawaan dengan yang tersimpan, lalu buang duplikat
-           return [...new Set([...defaultCategories, ...parsed])];
-        }
-      }
-    } catch (error) {
-      console.error("Gagal parse kategori di AddTransaction:", error);
-    }
-    return defaultCategories;
-  });
+  const [categories, setCategories] = useState([]);
+  const [accounts, setAccounts] = useState([]);
+  const [categoryId, setCategoryId] = useState(
+    initialDraft?.categoryId ?? null
+  );
+  const [accountId, setAccountId] = useState(initialDraft?.accountId ?? null);
+  const [isLoadingOptions, setIsLoadingOptions] = useState(true);
 
-  const categories = [
-    { name: "Food", icon: <Utensils size={20} /> },
-    { name: "Shoppings", icon: <ShoppingBag size={20} /> },
-    { name: "Utilities", icon: <Zap size={20} /> },
-    { name: "Transport", icon: <Car size={20} /> },
-    { name: "Entertainment", icon: <Tv size={20} /> },
-    { name: "Other", icon: <Banknote size={20} /> },
-  ];
+  const selectedCategory = categories.find((item) => item.id === categoryId);
+  const selectedAccount = accounts.find((item) => item.id === accountId);
 
   const handleBack = () => {
     setIsClosing(true);
@@ -59,46 +65,61 @@ export default function AddTransaction({ onClose }) {
   };
 
   const handleDraft = () => {
-    const draftData = { amount, description, category, reportType, balance };
-    localStorage.setItem("txDraft", JSON.stringify(draftData));
-    handleBack(); 
+    const draftData = {
+      amount,
+      description,
+      reportType,
+      categoryId,
+      accountId,
+    };
+    localStorage.setItem(draftKey, JSON.stringify(draftData));
+    handleBack();
   };
 
   const handleSave = async () => {
     const cleanAmount = parseInt(amount.replace(/\D/g, ""), 10) || 0;
-    const finalAmount = reportType === "Expenses" ? -Math.abs(cleanAmount) : Math.abs(cleanAmount);
-    const today = new Date().toLocaleDateString("en-US", { month: "long", day: "2-digit", year: "numeric" });
+
+    if (!selectedCategory || !selectedAccount) {
+      alert("Pilih kategori dan rekening terlebih dahulu.");
+      return;
+    }
+
+    if (cleanAmount <= 0) {
+      alert("Nominal harus lebih dari 0.");
+      return;
+    }
+
+    const now = new Date();
+    const today = [
+      now.getFullYear(),
+      String(now.getMonth() + 1).padStart(2, "0"),
+      String(now.getDate()).padStart(2, "0"),
+    ].join("-");
 
     const newTransaction = {
-      title: description || "Tanpa Keterangan", 
-      type: balance === "Bank" ? "Transfer" : "Cash", 
-      amount: finalAmount, 
-      date: today,
-      category: category,
+      title: description || "Tanpa Keterangan",
+      amount: cleanAmount,
       report: reportType,
-      balance: balance
+      date: today,
+      categoryId,
+      accountId,
     };
 
+    setIsSaving(true);
+
     try {
-      const response = await fetch("/api/transactions", {
+      await apiFetch("/api/transactions", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
         body: JSON.stringify(newTransaction),
       });
 
-      const result = await response.json();
-
-      if (result.status === "Success") {
-        localStorage.removeItem("txDraft");
-        setShowSuccessPopup(true);
-      } else {
-        alert("Gagal menyimpan: " + result.message);
-      }
+      localStorage.removeItem(draftKey);
+      setShowSuccessPopup(true);
     } catch (error) {
       console.error("Error saving:", error);
-      alert("Terjadi kesalahan jaringan atau server Backend belum menyala.");
+      alert(error.message);
+    } finally {
+      setIsSaving(false);
     }
   };
 
@@ -116,19 +137,45 @@ export default function AddTransaction({ onClose }) {
   };
 
   useEffect(() => {
-    try {
-      const savedDraft = localStorage.getItem("txDraft");
-      if (savedDraft) {
-        const parsedDraft = JSON.parse(savedDraft);
-        setAmount(parsedDraft.amount || "");
-        setDescription(parsedDraft.description || "");
-        setCategory(parsedDraft.category || "Transport");
-        setReportType(parsedDraft.reportType || "Income");
-        setBalance(parsedDraft.balance || "Bank");
-      }
-    } catch (error) {
-      console.error("Gagal load draft:", error);
-    }
+    let isCancelled = false;
+
+    Promise.all([apiFetch("/api/categories"), apiFetch("/api/accounts")])
+      .then(([categoryResult, accountResult]) => {
+        if (isCancelled) return;
+
+        const categoryList = categoryResult.data || [];
+        const accountList = accountResult.data || [];
+
+        setCategories(categoryList);
+        setAccounts(accountList);
+        setCategoryId(
+          (previous) =>
+            previous ??
+            categoryList.find((item) => item.name === "Transport")?.id ??
+            categoryList[0]?.id ??
+            null
+        );
+        setAccountId(
+          (previous) =>
+            previous ??
+            accountList.find((item) => item.name === "Bank")?.id ??
+            accountList[0]?.id ??
+            null
+        );
+      })
+      .catch((error) => {
+        if (!isCancelled) {
+          console.error("Gagal memuat pilihan:", error);
+          alert("Gagal memuat kategori/rekening: " + error.message);
+        }
+      })
+      .finally(() => {
+        if (!isCancelled) setIsLoadingOptions(false);
+      });
+
+    return () => {
+      isCancelled = true;
+    };
   }, []);
 
   return (
@@ -168,15 +215,18 @@ export default function AddTransaction({ onClose }) {
           <div className="category-grid">
             {categories.map((cat) => (
               <div
-                key={cat.name}
-                className={`category-item ${category === cat.name ? "active" : ""}`}
-                onClick={() => setCategory(cat.name)}
+                key={cat.id}
+                className={`category-item ${categoryId === cat.id ? "active" : ""}`}
+                onClick={() => setCategoryId(cat.id)}
               >
-                {cat.icon}
+                {CATEGORY_ICONS[cat.name] || <Banknote size={20} />}
                 <span>{cat.name}</span>
               </div>
             ))}
           </div>
+          {!isLoadingOptions && categories.length === 0 && (
+            <p className="options-empty">Belum ada kategori.</p>
+          )}
         </div>
 
         <div className="tx-section">
@@ -204,7 +254,7 @@ export default function AddTransaction({ onClose }) {
             className="balance-select-btn" 
             onClick={() => setIsBalanceOpen(!isBalanceOpen)}
           >
-            <span>{balance}</span>
+            <span>{selectedAccount?.name || "Pilih rekening"}</span>
             <ChevronDown 
               size={18} 
               style={{ 
@@ -217,25 +267,32 @@ export default function AddTransaction({ onClose }) {
 
           {isBalanceOpen && (
             <div className="balance-dropdown-list">
-              {balances.map((item) => (
+              {accounts.map((item) => (
                 <div 
-                  key={item} 
-                  className={`dropdown-item ${balance === item ? 'active' : ''}`}
+                  key={item.id} 
+                  className={`dropdown-item ${accountId === item.id ? 'active' : ''}`}
                   onClick={() => {
-                    setBalance(item); 
+                    setAccountId(item.id); 
                     setIsBalanceOpen(false); 
                   }}
                 >
-                  {item}
+                  {item.name}
                 </div>
               ))}
+              {!isLoadingOptions && accounts.length === 0 && (
+                <div className="dropdown-item">Belum ada rekening</div>
+              )}
             </div>
           )}
         </div>
 
         <div className="tx-actions">
-          <button className="btn-save" onClick={handleSave}>
-            Save
+          <button
+            className="btn-save"
+            onClick={handleSave}
+            disabled={isSaving || isLoadingOptions}
+          >
+            {isSaving ? "Menyimpan..." : "Save"}
           </button>
           <button className="btn-draft" onClick={handleDraft}>
             Draft
@@ -253,7 +310,7 @@ export default function AddTransaction({ onClose }) {
               </svg>
             </div>
             <h3 className="custom-popup-title">Yeay!</h3>
-            <p className="custom-popup-desc">Transaksi berhasil masuk ke Google Sheets!</p>
+            <p className="custom-popup-desc">Transaksi berhasil disimpan.</p>
             <div className="custom-popup-actions" style={{ width: "100%" }}>
               <button 
                 className="popup-btn confirm" 

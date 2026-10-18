@@ -24,3 +24,6 @@ credentials.json
 *.njsproj
 *.sln
 *.sw?
+
+session-*.md
+test-exec.js

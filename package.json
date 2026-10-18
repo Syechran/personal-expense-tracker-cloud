@@ -5,18 +5,24 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:api": "node --watch api/index.js",
     "build": "vite build",
+    "start": "node api/index.js",
     "lint": "eslint .",
     "preview": "vite preview"
   },
   "dependencies": {
-    "cors": "^2.8.6",
+    "bcryptjs": "^3.0.3",
+    "connect-pg-simple": "^10.0.0",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
-    "googleapis": "^171.4.0",
+    "express-rate-limit": "^8.7.1",
+    "express-session": "^1.19.0",
     "lucide-react": "^1.7.0",
+    "pg": "^8.23.1",
     "react": "^19.2.4",
-    "react-dom": "^19.2.4"
+    "react-dom": "^19.2.4",
+    "write-excel-file": "^4.1.1"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.4",
